@@ -21,7 +21,16 @@
 >
 > Instead of hotlinking `api.star-history.com`, it starts the official Star History backend inside your own GitHub Actions runner, reads GitHub star data directly, generates SVGs, and deploys stable static copies to the repository's own GitHub Pages site. Previously deployed charts remain visible even while the hosted chart API is unavailable.
 
-![Light and dark self-hosted Star History Pages result](docs/images/star-history-pages-demo.png)
+<table width="100%">
+  <tr>
+    <th width="50%">Light</th>
+    <th width="50%">Dark</th>
+  </tr>
+  <tr>
+    <td><img alt="Self-hosted Star History Pages light theme" src="docs/images/star-history-pages-light.png" width="100%" /></td>
+    <td><img alt="Self-hosted Star History Pages dark theme" src="docs/images/star-history-pages-dark.png" width="100%" /></td>
+  </tr>
+</table>
 
 <p align="center"><sub>Real output from the GitHub Pages deployment for <a href="https://github.com/MDX-Tom/gpt-5.6-instruct">MDX-Tom/gpt-5.6-instruct</a>.</sub></p>
 
@@ -40,40 +49,6 @@ The hosted Star History image is convenient, but it makes every README render de
 | Color schemes | Query-parameter dependent | Separate light and dark SVGs |
 | Credentials | URL parameters or hosted policy | GitHub Secret used only in a runner temporary file |
 | Deployment | Opaque | Pages deploys only when SVG bytes change |
-
-## Highlights
-
-- **Removes the hosted image API as a single point of failure**: no README reference to `api.star-history.com/chart`.
-- **Keeps the official rendering style**: checks out `star-history/star-history` and starts its local backend during each run.
-- **Targets the repository itself**: infers `owner/repository` from the Git remote or accepts it explicitly.
-- **Adapts to light and dark themes**: publishes `star-history-light.svg` and `star-history-dark.svg` for a README `<picture>` element.
-- **Scheduled and manual refreshes**: runs every 12 hours by default and exposes `workflow_dispatch`.
-- **Deploys only on change**: skips the Pages upload when both SVGs match the current deployment.
-- **Validates output integrity**: checks Content-Type, SVG/XML structure, repository markers, chart labels, and theme background.
-- **Uses minimal workflow permissions**: only `contents: read`, `pages: write`, and `id-token: write`.
-- **Handles tokens carefully**: masks the secret, removes upstream token-fragment logging, uses a restricted runner temporary file, and cleans it up.
-- **Uses an audited upstream pin by default**: keep the tested official commit SHA or explicitly choose `main` to follow upstream.
-
-## How it works
-
-```mermaid
-flowchart LR
-    A["Scheduled or manual Action"] --> B["Check out the target repository"]
-    B --> C["Check out official Star History source"]
-    C --> D["Start official backend on 127.0.0.1"]
-    D --> E["Read repository star history from GitHub API"]
-    E --> F["Generate and validate Light / Dark SVGs"]
-    F --> G{"Same as current Pages files?"}
-    G -->|Yes| H["Skip deployment"]
-    G -->|No| I["Upload and deploy GitHub Pages"]
-    I --> J["README loads charts from project Pages"]
-```
-
-The implementation has three reusable pieces:
-
-1. **Installer**: detects the repository and Pages URL, generates project-specific files, and protects different existing files from accidental replacement.
-2. **Local rendering bridge**: accepts only a loopback backend, downloads and validates both SVGs, then writes them atomically.
-3. **GitHub Actions workflow**: starts the official backend, manages the temporary token file, compares the previous charts, and deploys Pages.
 
 ## Install the skill
 
@@ -191,6 +166,40 @@ After the first deployment, the README should load:
 https://owner.github.io/repository/star-history-light.svg
 https://owner.github.io/repository/star-history-dark.svg
 ```
+
+## Highlights
+
+- **Removes the hosted image API as a single point of failure**: no README reference to `api.star-history.com/chart`.
+- **Keeps the official rendering style**: checks out `star-history/star-history` and starts its local backend during each run.
+- **Targets the repository itself**: infers `owner/repository` from the Git remote or accepts it explicitly.
+- **Adapts to light and dark themes**: publishes `star-history-light.svg` and `star-history-dark.svg` for a README `<picture>` element.
+- **Scheduled and manual refreshes**: runs every 12 hours by default and exposes `workflow_dispatch`.
+- **Deploys only on change**: skips the Pages upload when both SVGs match the current deployment.
+- **Validates output integrity**: checks Content-Type, SVG/XML structure, repository markers, chart labels, and theme background.
+- **Uses minimal workflow permissions**: only `contents: read`, `pages: write`, and `id-token: write`.
+- **Handles tokens carefully**: masks the secret, removes upstream token-fragment logging, uses a restricted runner temporary file, and cleans it up.
+- **Uses an audited upstream pin by default**: keep the tested official commit SHA or explicitly choose `main` to follow upstream.
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["Scheduled or manual Action"] --> B["Check out the target repository"]
+    B --> C["Check out official Star History source"]
+    C --> D["Start official backend on 127.0.0.1"]
+    D --> E["Read repository star history from GitHub API"]
+    E --> F["Generate and validate Light / Dark SVGs"]
+    F --> G{"Same as current Pages files?"}
+    G -->|Yes| H["Skip deployment"]
+    G -->|No| I["Upload and deploy GitHub Pages"]
+    I --> J["README loads charts from project Pages"]
+```
+
+The implementation has three reusable pieces:
+
+1. **Installer**: detects the repository and Pages URL, generates project-specific files, and protects different existing files from accidental replacement.
+2. **Local rendering bridge**: accepts only a loopback backend, downloads and validates both SVGs, then writes them atomically.
+3. **GitHub Actions workflow**: starts the official backend, manages the temporary token file, compares the previous charts, and deploys Pages.
 
 ## Generated project files
 

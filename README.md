@@ -21,7 +21,16 @@
 >
 > 它不再从 `api.star-history.com` 热链图片，而是定时在你自己的 GitHub Actions Runner 中启动官方 Star History 后端、直接读取 GitHub 星标数据、生成 SVG，再把稳定的静态副本部署到项目自己的 GitHub Pages。即使官方托管图片 API 暂时不可用，已经发布的曲线仍可继续显示。
 
-![自托管 Star History Pages 的明暗主题效果截图](docs/images/star-history-pages-demo.png)
+<table width="100%">
+  <tr>
+    <th width="50%">Light</th>
+    <th width="50%">Dark</th>
+  </tr>
+  <tr>
+    <td><img alt="自托管 Star History Pages 浅色主题效果" src="docs/images/star-history-pages-light.png" width="100%" /></td>
+    <td><img alt="自托管 Star History Pages 深色主题效果" src="docs/images/star-history-pages-dark.png" width="100%" /></td>
+  </tr>
+</table>
 
 <p align="center"><sub>真实效果取自 <a href="https://github.com/MDX-Tom/gpt-5.6-instruct">MDX-Tom/gpt-5.6-instruct</a> 的 GitHub Pages 部署。</sub></p>
 
@@ -40,40 +49,6 @@ Star History 官方提供的在线图片很方便，但 README 会直接依赖�
 | 明暗主题 | 依赖接口参数 | 同时发布 `light` / `dark` 两份 SVG |
 | 凭据 | URL 参数或服务端策略 | GitHub Secret，仅在 Runner 临时文件中使用 |
 | 部署频率 | 不透明 | 只有 SVG 内容变化时才重新部署 Pages |
-
-## 核心特性
-
-- **摆脱图片 API 单点故障**：README 不再引用 `api.star-history.com/chart`。
-- **沿用官方渲染效果**：任务运行时检出 `star-history/star-history` 官方源码并启动本地后端。
-- **项目自身数据**：安装器从 Git remote 自动识别 `owner/repository`，也可显式指定。
-- **明暗主题自适应**：生成 `star-history-light.svg` 与 `star-history-dark.svg`，通过 `<picture>` 自动切换。
-- **定时 + 手动刷新**：默认每 12 小时运行，同时保留 `workflow_dispatch`。
-- **按变化部署**：新旧 SVG 完全一致时跳过 Pages 上传，减少无意义部署。
-- **输出完整性校验**：检查 Content-Type、SVG/XML 结构、仓库标记、图表标签和主题背景。
-- **最小权限**：工作流仅声明 `contents: read`、`pages: write`、`id-token: write`。
-- **安全处理 Token**：显式 Mask Secret，移除上游 Token 片段日志，使用权限受限的 Runner 临时文件，任务结束自动清理。
-- **可审计、默认固定版本**：默认使用经过验证的官方 commit SHA，也可显式选择 `main` 跟随上游更新。
-
-## 工作原理
-
-```mermaid
-flowchart LR
-    A["定时或手动触发 Action"] --> B["检出当前仓库"]
-    B --> C["检出官方 Star History 源码"]
-    C --> D["在 127.0.0.1 启动官方后端"]
-    D --> E["通过 GitHub API 获取项目星标历史"]
-    E --> F["生成并校验 Light / Dark SVG"]
-    F --> G{"与当前 Pages 内容相同？"}
-    G -->|是| H["跳过部署"]
-    G -->|否| I["上传并部署 GitHub Pages"]
-    I --> J["README 从项目 Pages 加载图片"]
-```
-
-整个方案由三部分组成：
-
-1. **安装器**：识别仓库和 Pages URL，生成项目专用文件，遇到不同的现有文件时默认停止覆盖。
-2. **本地渲染桥接脚本**：只允许访问 `127.0.0.1` / `localhost`，下载、验证并原子写入两份 SVG。
-3. **GitHub Actions 工作流**：启动官方后端、管理 Token 临时文件、比较旧图并部署 Pages。
 
 ## 安装 Skill
 
@@ -192,6 +167,40 @@ https://owner.github.io/repository/star-history-light.svg
 https://owner.github.io/repository/star-history-dark.svg
 ```
 
+## 核心特性
+
+- **摆脱图片 API 单点故障**：README 不再引用 `api.star-history.com/chart`。
+- **沿用官方渲染效果**：任务运行时检出 `star-history/star-history` 官方源码并启动本地后端。
+- **项目自身数据**：安装器从 Git remote 自动识别 `owner/repository`，也可显式指定。
+- **明暗主题自适应**：生成 `star-history-light.svg` 与 `star-history-dark.svg`，通过 `<picture>` 自动切换。
+- **定时 + 手动刷新**：默认每 12 小时运行，同时保留 `workflow_dispatch`。
+- **按变化部署**：新旧 SVG 完全一致时跳过 Pages 上传，减少无意义部署。
+- **输出完整性校验**：检查 Content-Type、SVG/XML 结构、仓库标记、图表标签和主题背景。
+- **最小权限**：工作流仅声明 `contents: read`、`pages: write`、`id-token: write`。
+- **安全处理 Token**：显式 Mask Secret，移除上游 Token 片段日志，使用权限受限的 Runner 临时文件，任务结束自动清理。
+- **可审计、默认固定版本**：默认使用经过验证的官方 commit SHA，也可显式选择 `main` 跟随上游更新。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    A["定时或手动触发 Action"] --> B["检出当前仓库"]
+    B --> C["检出官方 Star History 源码"]
+    C --> D["在 127.0.0.1 启动官方后端"]
+    D --> E["通过 GitHub API 获取项目星标历史"]
+    E --> F["生成并校验 Light / Dark SVG"]
+    F --> G{"与当前 Pages 内容相同？"}
+    G -->|是| H["跳过部署"]
+    G -->|否| I["上传并部署 GitHub Pages"]
+    I --> J["README 从项目 Pages 加载图片"]
+```
+
+整个方案由三部分组成：
+
+1. **安装器**：识别仓库和 Pages URL，生成项目专用文件，遇到不同的现有文件时默认停止覆盖。
+2. **本地渲染桥接脚本**：只允许访问 `127.0.0.1` / `localhost`，下载、验证并原子写入两份 SVG。
+3. **GitHub Actions 工作流**：启动官方后端、管理 Token 临时文件、比较旧图并部署 Pages。
+
 ## 生成的项目文件
 
 ```text
@@ -271,7 +280,7 @@ README 加载的是你自己 Pages 上已经部署的 SVG，不经过官方托�
 - 与当前 Pages 内容比较，仅在变化时部署；
 - 使用 README `<picture>` 在明暗主题间自动切换。
 
-渲染器来自 [`star-history/star-history`](https://github.com/star-history/star-history)。README 的高信号组织方式参考了 GitHub 上优秀的 Agent Skill 项目，如 [`anthropics/skills`](https://github.com/anthropics/skills)、[`vercel-labs/agent-skills`](https://github.com/vercel-labs/agent-skills) 和 [`obra/superpowers`](https://github.com/obra/superpowers)。
+star-history图像渲染来自star-history.com官方开源代码 [`star-history/star-history`](https://github.com/star-history/star-history)。
 
 ## License
 
