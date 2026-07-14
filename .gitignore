@@ -1,0 +1,10 @@
+
+# Local Codex handoff notes
+codex/
+
+# Local development artifacts
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.tmp-preview/
