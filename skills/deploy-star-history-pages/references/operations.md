@@ -3,40 +3,52 @@
 ## Contents
 
 1. Architecture and trust boundaries
-2. GitHub token and secret setup
+2. History storage and lifecycle
 3. GitHub Pages activation
 4. Validation and rollout
 5. Failure diagnosis
-6. Upstream maintenance
+6. Backup, reset, and upstream maintenance
 
 ## 1. Architecture and trust boundaries
 
-The workflow checks out `star-history/star-history`, installs its pinned lockfiles, launches the official backend on `127.0.0.1:8080`, and asks that local backend to render two SVGs for the target repository. The renderer verifies the response type, XML root, declared width and height, repository marker, chart labels, and theme background before atomic writes.
+Each run checks out a pinned revision of `star-history/star-history`, installs its lockfile-pinned dependencies, and patches only `backend/main.ts` so the official backend can seed its in-memory cache from local JSON. The backend remains bound to `127.0.0.1:8080`; its JSDOM, `XYChart`, xkcd styling, theme selection, and SVGO output path remain unchanged.
 
-Only the resulting SVGs and `.nojekyll` enter the Pages artifact. The GitHub token, backend log, upstream checkout, dependencies, and temporary comparison files remain runner-local. The workflow also replaces upstream diagnostic strings that would otherwise print token prefixes or suffixes before it starts the backend.
+The workflow makes one authenticated GitHub repository-metadata request (`GET /repos/{owner}/{repo}`) to read the current `stargazers_count`, creation timestamp, and owner avatar. It uses the ephemeral job-scoped `${{ github.token }}`. It does not require a PAT, repository secret, individual-stargazer pagination, or the hosted Star History chart API.
 
-This removes `api.star-history.com` from the README image delivery path. It still depends on GitHub Actions, GitHub's REST API, the official Star History source repository, the npm registry during a run, and GitHub Pages for static delivery. A previously deployed Pages copy remains available between workflow runs.
+The Pages artifact contains:
 
-## 2. GitHub token and secret setup
-
-Use the least-privileged token that can read the target repository's public star data.
-
-Recommended for a public repository:
-
-1. Create a fine-grained personal access token.
-2. Limit repository access to the target repository.
-3. Keep repository permissions read-only; Metadata read access is sufficient for public repository metadata and stargazer reads in the normal GitHub API model.
-4. Give the token a practical expiration date and rotate it before expiry.
-5. Save it as the repository Actions secret `STAR_HISTORY_GITHUB_TOKEN`.
-
-With GitHub CLI, pass the value through standard input so it does not appear in shell history:
-
-```bash
-printf '%s' "$STAR_HISTORY_GITHUB_TOKEN" | \
-  gh secret set STAR_HISTORY_GITHUB_TOKEN --repo owner/repository
+```text
+.nojekyll
+manifest.sha256
+star-history-data.json
+star-history-light.svg
+star-history-dark.svg
 ```
 
-The workflow patches the official backend's startup token check to query the target repository. This supports tokens restricted to that repository instead of requiring access to the upstream `star-history/star-history` repository during validation.
+The token, upstream checkout, dependencies, backend log, and temporary files remain runner-local.
+
+External dependencies remain: GitHub Actions, GitHub's repository metadata endpoint, the official source repository, npm/pnpm package delivery, and GitHub Pages. The previously deployed Pages artifact remains readable between runs.
+
+## 2. History storage and lifecycle
+
+There are two JSON locations with different roles:
+
+| Location | Role | Updated automatically? | Creates Git commits? |
+| --- | --- | --- | --- |
+| `.github/data/star-history-data.json` | Deterministic bootstrap/cold-recovery seed | No | Only when a maintainer intentionally edits it |
+| `https://owner.github.io/repository/star-history-data.json` | Runtime source of truth | Yes, through Pages deployment | No |
+
+At the start of a run, the workflow downloads the Pages JSON. Only HTTP 404 selects the committed seed. Timeouts, other HTTP errors, schema errors, or a repository mismatch stop the refresh so accumulated history is not silently replaced.
+
+The updater then reads the current total once:
+
+- Same UTC date, unchanged total: leave JSON byte-stable and usually skip deployment.
+- Same UTC date, changed total: replace that day's latest point.
+- New UTC date: append one point, even when the count is unchanged.
+
+The first run from the generated bootstrap seed creates two points: repository creation at zero and the current total. It does not reconstruct historical individual-star timestamps. For an exact migration, supply a validated existing history JSON as the seed before the first deployment or keep the existing Pages JSON reachable.
+
+Because runtime state lives on Pages, scheduled refreshes never modify the Git branch and never create automatic commits. Pages deployments are separate repository deployment records; the workflow retains only the newest `github-pages` record.
 
 ## 3. GitHub Pages activation
 
@@ -44,15 +56,27 @@ UI path:
 
 1. Open **Settings**.
 2. Open **Pages**.
-3. Under **Build and deployment**, select **GitHub Actions** as the source.
+3. Under **Build and deployment**, choose **GitHub Actions**.
 
-With an authenticated GitHub CLI, inspect before changing remote state:
+No Actions secret is required. The workflow declares:
+
+```yaml
+permissions:
+  contents: read
+  deployments: write
+  pages: write
+  id-token: write
+```
+
+`deployments: write` is used only to mark superseded Pages deployments inactive and delete old deployment records.
+
+With authenticated GitHub CLI, inspect before changing remote state:
 
 ```bash
 gh api repos/owner/repository/pages
 ```
 
-Create or update the Pages configuration only when the user requested remote configuration:
+Create or update Pages only when remote configuration is requested:
 
 ```bash
 if gh api repos/owner/repository/pages >/dev/null 2>&1; then
@@ -62,16 +86,14 @@ else
 fi
 ```
 
-The workflow uses the `github-pages` environment and OpenID Connect deployment, with `pages: write` and `id-token: write` permissions.
-
 ## 4. Validation and rollout
 
 Local checks:
 
 ```bash
-python3 -m py_compile .github/scripts/render_star_history.py
+python3 -m py_compile .github/scripts/star_history.py
 git diff --check
-grep -R '__[A-Z0-9_]\+__' .github/scripts .github/workflows && exit 1 || true
+grep -R '__[A-Z0-9_]\+__' .github/scripts .github/data .github/workflows && exit 1 || true
 actionlint .github/workflows/sync-star-history.yml  # when installed
 ```
 
@@ -86,36 +108,56 @@ gh run watch --repo owner/repository --exit-status
 Public verification:
 
 ```bash
+curl -fL https://owner.github.io/repository/star-history-data.json -o /tmp/star-history-data.json
 curl -fL https://owner.github.io/repository/star-history-light.svg -o /tmp/star-history-light.svg
 curl -fL https://owner.github.io/repository/star-history-dark.svg -o /tmp/star-history-dark.svg
+python3 -m json.tool /tmp/star-history-data.json >/dev/null
 grep -q '<svg' /tmp/star-history-light.svg
 grep -q '<svg' /tmp/star-history-dark.svg
 ```
 
-Also open both files visually and confirm the README's `<picture>` element switches with the operating-system or browser color scheme.
+Also inspect both themes visually and confirm the README `<picture>` element switches correctly.
 
 ## 5. Failure diagnosis
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `Repository secret STAR_HISTORY_GITHUB_TOKEN is required` | Secret is missing or named differently | Create the exact repository secret and rerun |
-| Backend exits before `/healthz` | Token rejected, dependencies changed, or upstream startup changed | Read the backend log printed by the workflow; verify token and upstream ref |
-| `unexpected upstream token validation implementation` or `unexpected upstream token logging implementation` | `backend/token.ts` changed upstream | Inspect the token check and diagnostic messages, update the narrow patches, then pin a tested commit |
-| `SVG is unexpectedly small` or missing chart markers | Backend returned an error document or official SVG structure changed | Inspect the backend log and response; relax validation only after visual review |
-| `configure-pages` or deploy step fails | Pages source is not GitHub Actions, permissions are restricted, or environment protection blocks deployment | Check repository Pages settings, Actions policy, workflow permissions, and environment rules |
-| Workflow succeeds but README image is stale | Wrong Pages URL, CDN cache, or README still points at hosted API | Verify public SVG URLs, wait for propagation, and inspect every README variant |
-| Every scheduled run deploys unchanged charts | Byte output is nondeterministic or comparison URL is wrong | Diff generated and deployed SVGs and verify `STAR_HISTORY_PAGES_URL` |
+| `GitHub token environment variable is empty` | Job token is unavailable or the environment variable was renamed | Restore `GITHUB_JOB_TOKEN: ${{ github.token }}` and `--token-env GITHUB_JOB_TOKEN` |
+| `deployed Pages cache ... preserving the last deployment` | Pages JSON timed out, is invalid, or returned a non-404 error | Keep the deployed site unchanged; verify the Pages URL and JSON before rerunning |
+| `unexpected upstream implementation` | The pinned `backend/main.ts` startup fragment no longer matches | Review upstream changes, update the narrow cache-seed patch, and pin the tested revision |
+| Backend exits before `/healthz` | Dependency, source, cache schema, or port startup failure | Inspect the runner-local backend log and verify `STAR_HISTORY_DATA_PATH` |
+| `SVG is unexpectedly small` or missing official markers | Backend returned an error document or official output changed | Inspect the response and visually review before changing validation |
+| Local render warning followed by success | The run reused the last deployed SVG pair | Fix the local renderer; JSON may be newer than the visible pair until a later successful render |
+| `configure-pages` or deployment fails | Pages source, workflow permissions, or environment protection is wrong | Check Pages settings, Actions policy, declared permissions, and environment rules |
+| Workflow succeeds but README is stale | Wrong Pages URL, cache propagation, or README still points elsewhere | Verify all three public files and every README language |
+| Every run deploys without a new day/count | Manifest content is nondeterministic or the comparison URL is wrong | Compare local/deployed `manifest.sha256` and inspect generated JSON/SVG bytes |
 
-## 6. Upstream maintenance
+## 6. Backup, reset, and upstream maintenance
 
-The installer defaults to the reviewed upstream commit `bcddc9d532b10bac7e0187a741288bf9cab17616`. This avoids executing an unreviewed moving branch while the read-only GitHub token is present. Use `--source-ref main` only when deliberately following official fixes, and expect upstream internal changes to require maintenance.
+### Cold backup
 
-When updating the ref:
+Runtime Pages JSON is normally sufficient and requires no manual synchronization. If deletion of the Pages site is a realistic risk, periodically download the public JSON and intentionally replace `.github/data/star-history-data.json` in a reviewed maintenance commit:
 
-1. Inspect `backend/token.ts`, `backend/main.ts`, package manager metadata, and the `/svg` route.
-2. Confirm the token patch still matches exactly once.
-3. Run one light and one dark render.
-4. Visually compare the output with the previous deployment.
-5. Keep the old Pages assets live until the new workflow succeeds.
+```bash
+curl -fL https://owner.github.io/repository/star-history-data.json \
+  -o .github/data/star-history-data.json
+python3 -m json.tool .github/data/star-history-data.json >/dev/null
+```
 
-The original proven implementation was extracted from `MDX-Tom/gpt-5.6-instruct`, including the local renderer, explicit repository secret, local token-validation patch, changed-content check, and GitHub Pages deployment flow.
+This is optional. Do not use installer `--force` afterward without reviewing the seed diff, because it would restore the deterministic bootstrap template.
+
+Deleting both the Pages state and any maintained cold backup resets future history to the two-point bootstrap shape. Existing individual-star timestamps cannot be reconstructed by this metadata-only pipeline.
+
+### Upstream renderer
+
+The installer defaults to reviewed revision `bcddc9d532b10bac7e0187a741288bf9cab17616`. Use `--source-ref main` only when deliberately following upstream changes.
+
+When updating the revision:
+
+1. Inspect `backend/main.ts`, the `/svg` route, and package manager metadata.
+2. Confirm the cache-seed patch matches exactly once and is idempotent.
+3. Run the official TypeScript build.
+4. Render and visually compare both themes.
+5. Keep the previous Pages artifact live until the new workflow succeeds.
+
+The production design was generalized from `MDX-Tom/gpt-5.6-instruct`: Pages-hosted JSON state, one metadata request, a locally seeded official renderer, manifest-based deployment, and no recurring Git commits.

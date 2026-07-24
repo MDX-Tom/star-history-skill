@@ -1,7 +1,7 @@
 <h1 align="center">⭐ Deploy Star History Pages</h1>
 
 <p align="center">
-  Run the official Star History renderer in GitHub Actions and publish your repository's light and dark charts to GitHub Pages.
+  Run the official Star History renderer in GitHub Actions and publish repository-owned light/dark charts and history state to GitHub Pages.
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 </p>
 
 > [!IMPORTANT]
-> **This skill directly addresses the frequent outages, rate limits, and malformed responses of the hosted `star-history.com` image API that can leave GitHub READMEs without a live Star History chart.**
+> **This skill keeps GitHub README charts working when the hosted Star History image service is unavailable, rate-limited, or malformed.**
 >
-> Instead of hotlinking `api.star-history.com`, it starts the official Star History backend inside your own GitHub Actions runner, reads GitHub star data directly, generates SVGs, and deploys stable static copies to the repository's own GitHub Pages site. Previously deployed charts remain visible even while the hosted chart API is unavailable.
+> The README no longer hotlinks `api.star-history.com`. The workflow runs a pinned revision of the official renderer in the repository's own Actions runner, makes one GitHub repository-metadata request, and publishes light/dark SVGs plus date/star-count JSON to the project's Pages site. It needs no PAT, never requests the individual Stargazer list, and does not preserve history through scheduled Git commits.
 
 <table width="100%">
   <tr>
@@ -36,19 +36,21 @@
 
 ## Why this exists
 
-The hosted Star History image is convenient, but it makes every README render depend on an external dynamic endpoint. An outage, timeout, rate limit, or expired authentication parameter can turn the chart into a broken image.
+Hosted images are convenient, but every README render then depends on an external dynamic endpoint. A timeout, rate limit, or expired authentication parameter can turn the chart into a broken image.
 
-`deploy-star-history-pages` turns chart generation into a reproducible repository-owned deployment:
+`deploy-star-history-pages` moves generation, state, and delivery back into the repository:
 
-| | Hosted image API | This skill's GitHub Pages pipeline |
+| | Hosted image endpoint | This skill's Pages pipeline |
 | --- | --- | --- |
 | Image source | README calls an external dynamic endpoint | README loads static SVGs from the repository's own Pages site |
-| Failure isolation | Hosted API failures immediately affect the README | The last deployment remains available between runs |
+| Failure isolation | Endpoint failures immediately affect the README | The previous Pages artifact remains available between refreshes |
 | Freshness | Generated on request | Every 12 hours by default, plus manual runs |
-| Renderer | Hosted service | Official `star-history/star-history` source in Actions |
-| Color schemes | Query-parameter dependent | Separate light and dark SVGs |
-| Credentials | URL parameters or hosted policy | GitHub Secret used only in a runner temporary file |
-| Deployment | Opaque | Pages deploys only when SVG bytes change |
+| Data requests | Hosted policy is opaque | One repository-metadata read per run; no Stargazer listing |
+| Renderer | Hosted service | Official `star-history/star-history` source in the runner |
+| History state | Service-managed | `star-history-data.json` on the project's Pages site |
+| Credentials | URL parameters or hosted policy | Job-scoped `${{ github.token }}` only; no Secret |
+| Git history | Not applicable | Scheduled refreshes create no commits |
+| Pages deployments | Opaque | Deploy only when the JSON/SVG manifest changes |
 
 ## Install the skill
 
@@ -84,15 +86,15 @@ Update both README languages with GitHub Pages light/dark SVGs and run local val
 The agent will:
 
 1. Read project instructions, READMEs, the Git remote, and existing Pages configuration.
-2. Generate `.github/scripts/render_star_history.py`.
-3. Generate `.github/workflows/sync-star-history.yml`.
-4. Replace hosted API image URLs with a project Pages `<picture>` block in every maintained README.
-5. Run Python compilation, placeholder, workflow, and diff checks.
-6. Report any remaining Secret or Pages setup. When deployment is explicitly requested and `gh` is authenticated, it can also trigger and verify the remote workflow.
+2. Detect legacy `.github/scripts/render_star_history.py` and remove an unused copy only after review.
+3. Generate the unified `.github/scripts/star_history.py`.
+4. Generate the `.github/data/star-history-data.json` cold-start seed.
+5. Generate `.github/workflows/sync-star-history.yml`.
+6. Replace hosted image URLs with a project Pages `<picture>` block.
+7. Run Python, placeholder, workflow, test, and diff checks.
+8. Report the remaining Pages setting; it triggers and verifies a remote run only when requested.
 
 ### Run the installer directly
-
-Generate the base files without an agent:
 
 ```bash
 python3 skills/deploy-star-history-pages/scripts/install.py \
@@ -123,26 +125,7 @@ The installer prints a README-ready block:
 
 ## First deployment setup
 
-### 1. Create a GitHub token
-
-Prefer an expiring fine-grained personal access token limited to the target repository and read-only access. Public repositories normally need only Metadata/Stargazer reads; avoid write access and broad `repo` scope.
-
-### 2. Add the repository secret
-
-The exact secret name is:
-
-```text
-STAR_HISTORY_GITHUB_TOKEN
-```
-
-With GitHub CLI, pass the value over standard input so it stays out of shell history:
-
-```bash
-printf '%s' "$STAR_HISTORY_GITHUB_TOKEN" | \
-  gh secret set STAR_HISTORY_GITHUB_TOKEN --repo owner/repository
-```
-
-### 3. Enable GitHub Actions as the Pages source
+### 1. Enable GitHub Actions as the Pages source
 
 Open:
 
@@ -150,137 +133,147 @@ Open:
 Settings → Pages → Build and deployment → Source → GitHub Actions
 ```
 
-### 4. Run and verify
+No PAT or repository secret is needed. The workflow uses the automatically provided `${{ github.token }}` only for the current job.
+
+### 2. Run and verify
 
 ```bash
 gh workflow run sync-star-history.yml --repo owner/repository
 gh run watch --repo owner/repository --exit-status
 
+curl -fL https://owner.github.io/repository/star-history-data.json -o /tmp/star-history-data.json
 curl -fL https://owner.github.io/repository/star-history-light.svg -o /tmp/star-history-light.svg
 curl -fL https://owner.github.io/repository/star-history-dark.svg -o /tmp/star-history-dark.svg
 ```
 
-After the first deployment, the README should load:
-
-```text
-https://owner.github.io/repository/star-history-light.svg
-https://owner.github.io/repository/star-history-dark.svg
-```
+When the default seed starts the first deployment, history begins with two points: zero at repository creation and the current total. Future runs maintain UTC-date snapshots. The pipeline deliberately does not query each Stargazer's historical timestamp. To migrate an exact existing curve, provide validated history JSON before the first deployment or keep the existing Pages JSON reachable.
 
 ## Highlights
 
-- **Removes the hosted image API as a single point of failure**: no README reference to `api.star-history.com/chart`.
-- **Keeps the official rendering style**: checks out `star-history/star-history` and starts its local backend during each run.
-- **Targets the repository itself**: infers `owner/repository` from the Git remote or accepts it explicitly.
-- **Adapts to light and dark themes**: publishes `star-history-light.svg` and `star-history-dark.svg` for a README `<picture>` element.
-- **Scheduled and manual refreshes**: runs every 12 hours by default and exposes `workflow_dispatch`.
-- **Deploys only on change**: skips the Pages upload when both SVGs match the current deployment.
-- **Validates output integrity**: checks Content-Type, SVG/XML structure, repository markers, chart labels, and theme background.
-- **Uses minimal workflow permissions**: only `contents: read`, `pages: write`, and `id-token: write`.
-- **Handles tokens carefully**: masks the secret, removes upstream token-fragment logging, uses a restricted runner temporary file, and cleans it up.
-- **Uses an audited upstream pin by default**: keep the tested official commit SHA or explicitly choose `main` to follow upstream.
+- **Removes the hosted image API**: neither the README nor workflow calls `api.star-history.com/chart`.
+- **Preserves the official visual path**: keeps the official JSDOM, `XYChart`, xkcd style, themes, and SVGO output.
+- **No PAT or Secret**: one repository-metadata request uses the short-lived `${{ github.token }}`.
+- **No Stargazer listing**: reads only current `stargazers_count`, avoiding pagination, secondary limits, and identity processing.
+- **Pages-hosted runtime history**: automatically reads and updates public `star-history-data.json`.
+- **No automated commits**: scheduled jobs deploy a Pages artifact without changing a Git branch.
+- **Daily coalescing**: updates the last point on the same UTC date and appends on a new date.
+- **Light/dark adaptation**: publishes both SVG themes for a README `<picture>` element.
+- **Deploys only on change**: skips Pages deployment when the JSON/SVG manifest is unchanged.
+- **Fail-closed state recovery**: only a Pages JSON 404 selects the seed; other download or validation failures stop the refresh.
+- **Audited upstream pin**: uses a reviewed official source commit by default.
+- **Deployment-record cleanup**: retains the newest `github-pages` deployment without touching Git commit history.
 
 ## How it works
 
 ```mermaid
 flowchart LR
-    A["Scheduled or manual Action"] --> B["Check out the target repository"]
-    B --> C["Check out official Star History source"]
-    C --> D["Start official backend on 127.0.0.1"]
-    D --> E["Read repository star history from GitHub API"]
+    A["Every 12 hours or manual run"] --> B["Read Pages history JSON"]
+    B --> C["One GitHub repository metadata request"]
+    C --> D["Merge UTC date and star total"]
+    D --> E["Seed the official local backend cache"]
     E --> F["Generate and validate Light / Dark SVGs"]
-    F --> G{"Same as current Pages files?"}
-    G -->|Yes| H["Skip deployment"]
-    G -->|No| I["Upload and deploy GitHub Pages"]
-    I --> J["README loads charts from project Pages"]
+    F --> G{"Did the manifest change?"}
+    G -->|No| H["Finish without deployment or commit"]
+    G -->|Yes| I["Deploy JSON + SVGs to Pages"]
+    I --> J["Continue from Pages on the next run"]
 ```
 
-The implementation has three reusable pieces:
+The unified script exposes three subcommands:
 
-1. **Installer**: detects the repository and Pages URL, generates project-specific files, and protects different existing files from accidental replacement.
-2. **Local rendering bridge**: accepts only a loopback backend, downloads and validates both SVGs, then writes them atomically.
-3. **GitHub Actions workflow**: starts the official backend, manages the temporary token file, compares the previous charts, and deploys Pages.
+1. `refresh-data`: read Pages JSON, query the current repository total, and update daily history.
+2. `patch-upstream`: narrowly adapt the pinned official backend so local JSON initializes its cache.
+3. `render`: access only `127.0.0.1`, validate both themes, and write them atomically; a temporary local-render failure can reuse the previous Pages pair.
 
 ## Generated project files
 
 ```text
 .github/
+├── data/
+│   └── star-history-data.json
 ├── scripts/
-│   └── render_star_history.py
+│   └── star_history.py
 └── workflows/
     └── sync-star-history.yml
 ```
 
-The Pages artifact contains only:
+The Pages artifact contains:
 
 ```text
 .nojekyll
+manifest.sha256
+star-history-data.json
 star-history-light.svg
 star-history-dark.svg
 ```
 
-The token, runner logs, upstream source, dependencies, and temporary comparison files are not published.
+`.github/data/star-history-data.json` is the cold-start seed; the same-named Pages file is the normal runtime source of truth. No manual synchronization is needed during normal operation. Only copy Pages JSON back into the repository in a reviewed maintenance commit when an additional cold backup is desired.
 
 ## Validation
-
-Validate this skill repository with:
 
 ```bash
 python3 -m py_compile \
   skills/deploy-star-history-pages/scripts/install.py \
-  skills/deploy-star-history-pages/assets/render_star_history.py
+  skills/deploy-star-history-pages/assets/star_history.py
 
 python3 -m unittest discover -s tests -v
 
 git diff --check
 ```
 
-Skill maintainers should also use the Codex `skill-creator` bundled `quick_validate.py` to validate `SKILL.md` metadata.
-
-After installation into a target repository, also run this when `actionlint` is available:
+After installation, run this when `actionlint` is available:
 
 ```bash
 actionlint .github/workflows/sync-star-history.yml
 ```
 
+Skill maintainers should also run Codex `skill-creator`'s `quick_validate.py` for `SKILL.md` metadata and perform one temporary-repository installation test.
+
 ## FAQ
 
-### Why not pass `${{ github.token }}` directly to the official backend?
+### Where is the history JSON stored?
 
-This skill generalizes the deployment proven in `gpt-5.6-instruct`: it uses an explicit repository secret and narrows the official backend's startup token check to the target repository. That works cleanly with repository-scoped fine-grained tokens and provides authenticated GitHub API capacity.
+Runtime state lives at `star-history-data.json` on the project's Pages site, which Actions reads and updates automatically. `.github/data/star-history-data.json` is only the first-deploy/reset seed. Normal operation needs no manual synchronization.
 
-### What happens during another `star-history.com` outage?
+### Does every 12-hour run create a commit?
 
-The README loads already deployed SVGs from your Pages site, not the hosted image API. Existing charts remain visible. Future refreshes read GitHub's API directly and run the official renderer inside the Actions runner.
+No. The workflow deploys a Pages artifact and never writes to the Git branch. When the manifest is unchanged, it skips the Pages deployment too.
+
+### Do I need to configure an access token?
+
+No. The default workflow uses GitHub's automatically injected, job-scoped `${{ github.token }}` for one repository-metadata request.
+
+### What happens during another hosted `star-history.com` outage?
+
+The README loads SVGs from the project's own Pages site and refreshes do not call the hosted chart endpoint, so that outage is outside this path. The workflow still requires the official GitHub source repository and npm dependencies to be reachable.
 
 ### Can I refresh more often?
 
-Yes, with `--cron`, but account for GitHub API rate limits, Actions usage, repository star growth, and Pages deployment frequency. Every 12 hours is near-real-time enough for most projects.
+Yes, through `--cron`. Each run makes only one repository-metadata request, but Actions and Pages usage should still be considered.
 
-### Are custom domains supported?
+### What if the Pages site is deleted?
 
-Yes. Pass `--pages-url https://stars.example.com` after configuring the Pages custom domain.
+A Pages JSON 404 selects the repository seed. The default seed reinitializes a two-point curve. For disaster recovery, periodically make a reviewed manual copy of Pages JSON under `.github/data/`; see [`operations.md`](skills/deploy-star-history-pages/references/operations.md).
 
 ### What if an upstream update breaks the workflow?
 
-Use the failure table in [`operations.md`](skills/deploy-star-history-pages/references/operations.md). A changed `backend/token.ts` implementation is a common cause. After updating and testing the narrow patch, pin the validated version with `--source-ref <commit-sha>`.
+Use [`operations.md`](skills/deploy-star-history-pages/references/operations.md). Inspect `backend/main.ts` startup and the `/svg` route, then update the pinned SHA only after building and visually validating both themes.
 
 ### What about private repositories?
 
-Support depends on the GitHub plan, Pages visibility, and token permissions. A published chart may disclose repository existence or growth information, so confirm the required visibility before deployment.
+Support depends on the GitHub plan and Pages visibility. Public JSON/SVG output reveals the repository name and growth trend, so confirm the required visibility first.
 
 ## Origin and acknowledgements
 
-This skill was extracted from the production Star History workflow in [`MDX-Tom/gpt-5.6-instruct`](https://github.com/MDX-Tom/gpt-5.6-instruct). It preserves and generalizes these proven design choices:
+This skill synchronizes and generalizes the current production design from [`MDX-Tom/gpt-5.6-instruct`](https://github.com/MDX-Tom/gpt-5.6-instruct):
 
-- check out and run the official Star History source in Actions;
-- render light and dark SVGs through a local backend;
-- use a repository secret and target-repository token validation;
-- validate and atomically write SVG output;
-- compare against the current Pages deployment and deploy only on change;
-- switch themes in README with `<picture>`.
+- Pages JSON as runtime history;
+- one repository-metadata request per run;
+- local cache injection into the official renderer;
+- complete light/dark SVG validation;
+- manifest-based deployment;
+- no PAT, no individual Stargazer list, and no scheduled Git commit.
 
-The renderer comes from [`star-history/star-history`](https://github.com/star-history/star-history). The README's high-signal structure draws inspiration from excellent GitHub agent-skill projects including [`anthropics/skills`](https://github.com/anthropics/skills), [`vercel-labs/agent-skills`](https://github.com/vercel-labs/agent-skills), and [`obra/superpowers`](https://github.com/obra/superpowers).
+Chart rendering comes from the official open-source [`star-history/star-history`](https://github.com/star-history/star-history) repository.
 
 ## License
 

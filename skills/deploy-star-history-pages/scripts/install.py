@@ -25,8 +25,8 @@ REPOSITORY_PATTERN = re.compile(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Write a GitHub Actions workflow and renderer that publish the target "
-            "repository's Star History SVGs to GitHub Pages."
+            "Write a GitHub Actions workflow, data seed, and unified local renderer "
+            "that publish the target repository's Star History to GitHub Pages."
         )
     )
     parser.add_argument(
@@ -224,16 +224,17 @@ def main() -> int:
                 "__STAR_HISTORY_CRON__": cron,
             },
         )
-        renderer = (ASSETS_DIR / "render_star_history.py").read_text(
+        star_history = (ASSETS_DIR / "star_history.py").read_text(
             encoding="utf-8"
+        )
+        seed = render_asset(
+            "star-history-data.json.tmpl",
+            {"__STAR_HISTORY_REPOSITORY__": repository},
         )
         snippet = render_asset(
             "readme-snippet.html.tmpl",
             {
                 "__STAR_HISTORY_REPOSITORY__": repository,
-                "__STAR_HISTORY_REPOSITORY_QUERY__": urllib.parse.quote(
-                    repository, safe=""
-                ),
                 "__STAR_HISTORY_PAGES_URL__": pages_url,
             },
         )
@@ -242,10 +243,17 @@ def main() -> int:
         return 2
 
     planned = (
-        (root / ".github/scripts/render_star_history.py", renderer, 0o755),
+        (root / ".github/scripts/star_history.py", star_history, 0o755),
+        (root / ".github/data/star-history-data.json", seed, 0o644),
         (root / ".github/workflows/sync-star-history.yml", workflow, 0o644),
     )
     statuses = [(path, content, mode, status_for(path, content)) for path, content, mode in planned]
+    legacy_renderer = root / ".github/scripts/render_star_history.py"
+    if legacy_renderer.exists():
+        print(
+            "[legacy] .github/scripts/render_star_history.py is no longer used; "
+            "review and remove it manually"
+        )
     conflicts = [path for path, _, _, status in statuses if status == "replace"]
     if conflicts and not args.force:
         for path in conflicts:

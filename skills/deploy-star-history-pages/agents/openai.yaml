@@ -1,4 +1,4 @@
 interface:
   display_name: "Deploy Star History Pages"
-  short_description: "Self-host live Star History charts on GitHub Pages"
-  default_prompt: "Use $deploy-star-history-pages to add self-hosted light and dark Star History charts to this GitHub repository."
+  short_description: "Deploy commit-free Star History charts to Pages"
+  default_prompt: "Use $deploy-star-history-pages to publish light and dark Star History charts with Pages-hosted state, no PAT, and no recurring Git commits."
