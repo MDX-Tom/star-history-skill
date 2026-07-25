@@ -1,3 +1,5 @@
+# Render with pinned official source and persist date/count history in Pages.
+# The workflow deploys Pages artifacts only; it never creates repository commits.
 name: Render Star History
 
 on:
@@ -7,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  deployments: write
   pages: write
   id-token: write
 
@@ -31,10 +34,12 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Check out this repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - name: Check out official Star History source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: star-history/star-history
           ref: ${{ env.STAR_HISTORY_SOURCE_REF }}
@@ -42,15 +47,15 @@ jobs:
           persist-credentials: false
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@v6
         with:
           version: 9.15.9
           run_install: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
           cache: pnpm
           cache-dependency-path: |
             .star-history-upstream/pnpm-lock.yaml
@@ -63,75 +68,50 @@ jobs:
           (cd "${STAR_HISTORY_SOURCE_DIR}" && pnpm install --frozen-lockfile)
           (cd "${STAR_HISTORY_SOURCE_DIR}/backend" && pnpm install --frozen-lockfile)
 
-      - name: Render official light and dark charts locally
+      - name: Refresh data and render official light/dark charts locally
         id: render
         shell: bash
         env:
-          GITHUB_API_TOKEN: ${{ secrets.STAR_HISTORY_GITHUB_TOKEN }}
+          # One repository-metadata request reads the current total. Individual
+          # stargazers and the hosted Star History chart service are not queried.
+          GITHUB_JOB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
-          if [[ -z "${GITHUB_API_TOKEN}" ]]; then
-            echo "::error::Repository secret STAR_HISTORY_GITHUB_TOKEN is required."
+          if [[ -z "${GITHUB_JOB_TOKEN}" ]]; then
+            echo "::error::The workflow GITHUB_TOKEN is unavailable."
             exit 1
           fi
-          echo "::add-mask::${GITHUB_API_TOKEN}"
 
-          token_file="${RUNNER_TEMP}/star-history-token.env"
+          data_file="${RUNNER_TEMP}/star-history-data.json"
           server_log="${RUNNER_TEMP}/star-history-backend.log"
-          current_dir="$(mktemp -d)"
-          umask 077
-          printf '%s' "${GITHUB_API_TOKEN}" > "${token_file}"
-
-          token_source="${STAR_HISTORY_SOURCE_DIR}/backend/token.ts"
-          python3 - "${token_source}" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          path = Path(sys.argv[1])
-          source = path.read_text()
-          pattern = re.compile(
-              r'await\s+api\.getRepoStargazersCount\(\s*'
-              r'"star-history/star-history"\s*,\s*token\s*\);'
-          )
-          replacement = (
-              'await api.getRepoStargazersCount('
-              'process.env.STAR_HISTORY_TOKEN_TEST_REPO || '
-              '"star-history/star-history", token);'
-          )
-          source, count = pattern.subn(replacement, source)
-          if count != 1:
-              raise SystemExit("unexpected upstream token validation implementation")
-
-          redactions = {
-              'logger.error(`Token ${token.slice(0, 8)}...${token.slice(-4)} is unusable`, error);':
-                  'logger.error("A configured GitHub token is unusable", error);',
-              'logger.warn(`Token ${token.slice(0, 8)}... rate-limited, cooling down for ${COOLDOWN_MS / 60000}m`);':
-                  'logger.warn(`A configured GitHub token is rate-limited, cooling down for ${COOLDOWN_MS / 60000}m`);',
-          }
-          for original, replacement in redactions.items():
-              if source.count(original) != 1:
-                  raise SystemExit("unexpected upstream token logging implementation")
-              source = source.replace(original, replacement)
-          path.write_text(source)
-          PY
 
           cleanup() {
             if [[ -n "${server_pid:-}" ]]; then
               kill "${server_pid}" 2>/dev/null || true
               wait "${server_pid}" 2>/dev/null || true
             fi
-            rm -f "${token_file}" "${server_log}"
-            rm -rf "${current_dir}"
           }
           trap cleanup EXIT
 
+          # Pages JSON is the runtime source of truth. The committed bootstrap
+          # seed is used only when the first deployment path returns HTTP 404.
+          python3 .github/scripts/star_history.py refresh-data \
+            --repository "${STAR_HISTORY_REPOSITORY}" \
+            --seed-file .github/data/star-history-data.json \
+            --deployed-url "${STAR_HISTORY_PAGES_URL}/star-history-data.json" \
+            --output "${data_file}" \
+            --token-env GITHUB_JOB_TOKEN
+
+          # Seed the pinned official backend cache while leaving its JSDOM,
+          # XYChart, xkcd styling, theme handling, and SVGO renderer unchanged.
+          python3 .github/scripts/star_history.py patch-upstream \
+            --source-dir "${STAR_HISTORY_SOURCE_DIR}"
+          (cd "${STAR_HISTORY_SOURCE_DIR}/backend" && pnpm run build)
+
           (
             cd "${STAR_HISTORY_SOURCE_DIR}/backend"
-            ENVPATH="${token_file}" \
-              STAR_HISTORY_TOKEN_TEST_REPO="${STAR_HISTORY_REPOSITORY}" \
-              pnpm exec tsx main.ts
+            STAR_HISTORY_DATA_PATH="${data_file}" pnpm exec tsx main.ts
           ) >"${server_log}" 2>&1 &
           server_pid=$!
 
@@ -151,29 +131,35 @@ jobs:
           done
 
           mkdir -p "${STAR_HISTORY_SITE_DIR}"
-          if ! python3 .github/scripts/render_star_history.py \
+          cp "${data_file}" "${STAR_HISTORY_SITE_DIR}/star-history-data.json"
+          if ! python3 .github/scripts/star_history.py render \
               --repository "${STAR_HISTORY_REPOSITORY}" \
-              --output-dir "${STAR_HISTORY_SITE_DIR}"; then
+              --output-dir "${STAR_HISTORY_SITE_DIR}" \
+              --fallback-base-url "${STAR_HISTORY_PAGES_URL}"; then
             cat "${server_log}" >&2
             exit 1
           fi
           touch "${STAR_HISTORY_SITE_DIR}/.nojekyll"
 
+          (
+            cd "${STAR_HISTORY_SITE_DIR}"
+            sha256sum \
+              star-history-data.json \
+              star-history-dark.svg \
+              star-history-light.svg | LC_ALL=C sort > manifest.sha256
+          )
+
+          # A byte-stable same-day count skips the Pages deployment entirely.
+          current_dir="$(mktemp -d)"
           changed=true
           if curl --fail --silent --location \
-              "${STAR_HISTORY_PAGES_URL}/star-history-light.svg" \
-              --output "${current_dir}/star-history-light.svg" && \
-            curl --fail --silent --location \
-              "${STAR_HISTORY_PAGES_URL}/star-history-dark.svg" \
-              --output "${current_dir}/star-history-dark.svg" && \
+              "${STAR_HISTORY_PAGES_URL}/manifest.sha256" \
+              --output "${current_dir}/manifest.sha256" && \
             cmp --silent \
-              "${STAR_HISTORY_SITE_DIR}/star-history-light.svg" \
-              "${current_dir}/star-history-light.svg" && \
-            cmp --silent \
-              "${STAR_HISTORY_SITE_DIR}/star-history-dark.svg" \
-              "${current_dir}/star-history-dark.svg"; then
+              "${STAR_HISTORY_SITE_DIR}/manifest.sha256" \
+              "${current_dir}/manifest.sha256"; then
             changed=false
-            echo "The deployed charts are already current."
+            echo "The deployed Pages site is already current."
           fi
           echo "changed=${changed}" >> "${GITHUB_OUTPUT}"
 
@@ -191,3 +177,53 @@ jobs:
         if: steps.render.outputs.changed == 'true'
         id: deployment
         uses: actions/deploy-pages@v5
+
+      # Deployment records are not Git commits. Keep only the newest record so
+      # the repository's Deployments list does not grow every scheduled run.
+      - name: Delete old GitHub Pages deployment records
+        if: ${{ success() && steps.render.outcome == 'success' }}
+        uses: actions/github-script@v9
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const environment = "github-pages";
+            const deployments = await github.paginate(
+              github.rest.repos.listDeployments,
+              { owner, repo, environment, per_page: 100 },
+            );
+
+            deployments.sort((left, right) => {
+              const difference = Date.parse(right.created_at) - Date.parse(left.created_at);
+              return difference || right.id - left.id;
+            });
+            if (deployments.length <= 1) {
+              core.info(`Keeping ${deployments.length} ${environment} deployment record(s).`);
+              return;
+            }
+
+            const [currentDeployment, ...oldDeployments] = deployments;
+            for (const oldDeployment of oldDeployments) {
+              const { data: statuses } = await github.rest.repos.listDeploymentStatuses({
+                owner,
+                repo,
+                deployment_id: oldDeployment.id,
+                per_page: 1,
+              });
+              if (statuses[0]?.state !== "inactive") {
+                await github.rest.repos.createDeploymentStatus({
+                  owner,
+                  repo,
+                  deployment_id: oldDeployment.id,
+                  state: "inactive",
+                  environment,
+                  auto_inactive: false,
+                  description: `Superseded by deployment ${currentDeployment.id}.`,
+                });
+              }
+              await github.rest.repos.deleteDeployment({
+                owner,
+                repo,
+                deployment_id: oldDeployment.id,
+              });
+            }

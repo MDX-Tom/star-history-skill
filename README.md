@@ -1,7 +1,7 @@
 <h1 align="center">⭐ Deploy Star History Pages</h1>
 
 <p align="center">
-  用 GitHub Actions 运行官方 Star History 渲染器，并把项目自身的明暗主题曲线发布到 GitHub Pages。
+  用 GitHub Actions 运行官方 Star History 渲染器，把项目自身的明暗主题曲线和历史状态发布到 GitHub Pages。
 </p>
 
 <p align="center">
@@ -17,9 +17,9 @@
 </p>
 
 > [!IMPORTANT]
-> **这个 Skill 直接解决 `star-history.com` 官方图片 API 经常宕机、限流或返回异常，导致 GitHub README 无法显示实时 Star History 图片的问题。**
+> **这个 Skill 用于解决托管 Star History 图片接口宕机、限流或返回异常时，GitHub README 曲线失效的问题。**
 >
-> 它不再从 `api.star-history.com` 热链图片，而是定时在你自己的 GitHub Actions Runner 中启动官方 Star History 后端、直接读取 GitHub 星标数据、生成 SVG，再把稳定的静态副本部署到项目自己的 GitHub Pages。即使官方托管图片 API 暂时不可用，已经发布的曲线仍可继续显示。
+> README 不再热链 `api.star-history.com`。工作流在仓库自己的 Actions Runner 中运行固定版本的官方渲染源码，只查询一次 GitHub 仓库元数据，将明暗 SVG 与日期/星标总数 JSON 发布到项目自己的 Pages。无需 PAT，不请求个人 Stargazer 列表，也不通过定时 commit 保存历史。
 
 <table width="100%">
   <tr>
@@ -36,19 +36,21 @@
 
 ## 为什么需要它
 
-Star History 官方提供的在线图片很方便，但 README 会直接依赖一个外部动态接口。一旦接口宕机、超时、触发限流或认证参数失效，项目主页上的曲线就会变成裂图。
+托管图片很方便，但 README 的每次渲染都会依赖外部动态接口。一旦接口超时、限流或认证参数失效，项目首页就会出现裂图。
 
-`deploy-star-history-pages` 把“生成图片”变成仓库自身的可重复部署流程：
+`deploy-star-history-pages` 把生成、存储和展示都收回到仓库自身：
 
-| | 官方托管图片 API | 本 Skill 的 GitHub Pages 方案 |
+| | 托管图片接口 | 本 Skill 的 Pages 方案 |
 | --- | --- | --- |
-| 图片来源 | README 每次访问外部动态接口 | README 读取项目自己的 Pages 静态 SVG |
-| 故障隔离 | 外部接口异常会直接影响 README | 已部署图片在两次任务之间持续可用 |
-| 数据刷新 | 请求时动态生成 | 默认每 12 小时，也支持手动运行 |
-| 渲染实现 | 官方托管服务 | Actions 内运行官方 `star-history/star-history` 源码 |
-| 明暗主题 | 依赖接口参数 | 同时发布 `light` / `dark` 两份 SVG |
-| 凭据 | URL 参数或服务端策略 | GitHub Secret，仅在 Runner 临时文件中使用 |
-| 部署频率 | 不透明 | 只有 SVG 内容变化时才重新部署 Pages |
+| 图片来源 | README 请求外部动态接口 | README 读取项目自己的 Pages 静态 SVG |
+| 故障隔离 | 接口故障立即影响 README | 上一份 Pages 产物在刷新间隔内持续可用 |
+| 数据刷新 | 请求时动态生成 | 默认每 12 小时，支持手动运行 |
+| 数据请求 | 服务端策略不透明 | 每次只读取一次仓库元数据，不列出 Stargazer |
+| 渲染实现 | 托管服务 | Runner 内运行官方 `star-history/star-history` 源码 |
+| 历史状态 | 服务端维护 | 项目 Pages 上的 `star-history-data.json` |
+| 凭据 | URL 参数或服务端策略 | 仅使用任务自带的 `${{ github.token }}`，无需 Secret |
+| Git 历史 | 不适用 | 定时刷新不创建 commit |
+| Pages 部署 | 不透明 | 仅当 JSON/SVG manifest 变化时部署 |
 
 ## 安装 Skill
 
@@ -81,18 +83,18 @@ ln -sfn "$PWD/skills/deploy-star-history-pages" \
 同步修改中英文 README，使用 GitHub Pages 明暗主题 SVG，并完成本地验证。
 ```
 
-Agent 会执行以下工作：
+Agent 会：
 
-1. 读取项目规范、README、Git remote 和已有 Pages 配置。
-2. 生成 `.github/scripts/render_star_history.py`。
-3. 生成 `.github/workflows/sync-star-history.yml`。
-4. 把 README 中的官方 API 图片替换为项目 Pages 的 `<picture>` 块。
-5. 运行 Python 编译、模板占位符、Workflow 和 diff 检查。
-6. 告知你尚需完成的 Secret / Pages 配置；在明确要求部署且 `gh` 已登录时，也可继续触发并验证远端任务。
+1. 读取项目规范、README、Git remote 与已有 Pages 配置。
+2. 识别旧 `.github/scripts/render_star_history.py`，经审阅后移除不再使用的副本。
+3. 生成统一的 `.github/scripts/star_history.py`。
+4. 生成 `.github/data/star-history-data.json` 冷启动种子。
+5. 生成 `.github/workflows/sync-star-history.yml`。
+6. 把 README 图片改成项目 Pages 的 `<picture>` 块。
+7. 执行 Python、模板占位符、Workflow、测试和 diff 检查。
+8. 说明尚需启用的 Pages 设置；只有在你要求远程部署时才触发并验证工作流。
 
 ### 直接运行安装器
-
-不通过 Agent 也可以生成基础文件：
 
 ```bash
 python3 skills/deploy-star-history-pages/scripts/install.py \
@@ -123,26 +125,7 @@ python3 skills/deploy-star-history-pages/scripts/install.py \
 
 ## 首次部署配置
 
-### 1. 创建 GitHub Token
-
-推荐创建仅限目标仓库、只读权限、带有效期的 fine-grained personal access token。公开仓库通常只需要读取 Metadata / Stargazer 数据，不要授予写权限或宽泛的 `repo` 权限。
-
-### 2. 添加 Repository Secret
-
-Secret 名称必须是：
-
-```text
-STAR_HISTORY_GITHUB_TOKEN
-```
-
-使用 GitHub CLI 时，通过标准输入传值，避免 Token 出现在 Shell 历史中：
-
-```bash
-printf '%s' "$STAR_HISTORY_GITHUB_TOKEN" | \
-  gh secret set STAR_HISTORY_GITHUB_TOKEN --repo owner/repository
-```
-
-### 3. 启用 GitHub Actions Pages
+### 1. 启用 GitHub Actions Pages
 
 打开：
 
@@ -150,92 +133,92 @@ printf '%s' "$STAR_HISTORY_GITHUB_TOKEN" | \
 Settings → Pages → Build and deployment → Source → GitHub Actions
 ```
 
-### 4. 运行并检查
+无需创建 PAT 或 Repository Secret。工作流只在当前任务内使用 GitHub 自动提供的 `${{ github.token }}`。
+
+### 2. 运行并检查
 
 ```bash
 gh workflow run sync-star-history.yml --repo owner/repository
 gh run watch --repo owner/repository --exit-status
 
+curl -fL https://owner.github.io/repository/star-history-data.json -o /tmp/star-history-data.json
 curl -fL https://owner.github.io/repository/star-history-light.svg -o /tmp/star-history-light.svg
 curl -fL https://owner.github.io/repository/star-history-dark.svg -o /tmp/star-history-dark.svg
 ```
 
-第一次部署完成后，README 应直接读取：
-
-```text
-https://owner.github.io/repository/star-history-light.svg
-https://owner.github.io/repository/star-history-dark.svg
-```
+首次由默认种子启动时，历史会从“仓库创建时 0 Star”与“当前总数”两个点开始；此后按 UTC 日期维护快照。它不会反查每位 Stargazer 的历史时间。如需迁移完整已有曲线，请在首次部署前提供已验证的历史 JSON，或保持原 Pages JSON 可访问。
 
 ## 核心特性
 
-- **摆脱图片 API 单点故障**：README 不再引用 `api.star-history.com/chart`。
-- **沿用官方渲染效果**：任务运行时检出 `star-history/star-history` 官方源码并启动本地后端。
-- **项目自身数据**：安装器从 Git remote 自动识别 `owner/repository`，也可显式指定。
-- **明暗主题自适应**：生成 `star-history-light.svg` 与 `star-history-dark.svg`，通过 `<picture>` 自动切换。
-- **定时 + 手动刷新**：默认每 12 小时运行，同时保留 `workflow_dispatch`。
-- **按变化部署**：新旧 SVG 完全一致时跳过 Pages 上传，减少无意义部署。
-- **输出完整性校验**：检查 Content-Type、SVG/XML 结构、仓库标记、图表标签和主题背景。
-- **最小权限**：工作流仅声明 `contents: read`、`pages: write`、`id-token: write`。
-- **安全处理 Token**：显式 Mask Secret，移除上游 Token 片段日志，使用权限受限的 Runner 临时文件，任务结束自动清理。
-- **可审计、默认固定版本**：默认使用经过验证的官方 commit SHA，也可显式选择 `main` 跟随上游更新。
+- **摆脱托管图片 API**：README 与工作流均不调用 `api.star-history.com/chart`。
+- **保留官方视觉实现**：继续使用官方 JSDOM、`XYChart`、xkcd 风格、主题和 SVGO 渲染路径。
+- **无 PAT / 无 Secret**：使用短生命周期 `${{ github.token }}` 完成一次仓库元数据请求。
+- **不请求 Stargazer 列表**：只读取当前 `stargazers_count`，避免分页、二级限流与个人列表处理。
+- **Pages 保存运行态历史**：自动读取并更新公开的 `star-history-data.json`。
+- **不自动 commit**：计划任务只部署 Pages Artifact，不改 Git 分支。
+- **按日合并**：同一 UTC 日期更新最后一个点，新日期追加一个点。
+- **明暗主题自适应**：同时发布 Light / Dark SVG，通过 `<picture>` 自动切换。
+- **按变化部署**：JSON 和 SVG 的 manifest 未变化时跳过 Pages 部署。
+- **失效保护**：只有 Pages JSON 返回 404 才使用本地种子；其他下载或校验错误停止更新，避免覆盖历史。
+- **可审计上游**：默认固定经过验证的官方 commit SHA。
+- **清理部署记录**：保留最新 `github-pages` deployment 记录，不影响 Git commit 历史。
 
 ## 工作原理
 
 ```mermaid
 flowchart LR
-    A["定时或手动触发 Action"] --> B["检出当前仓库"]
-    B --> C["检出官方 Star History 源码"]
-    C --> D["在 127.0.0.1 启动官方后端"]
-    D --> E["通过 GitHub API 获取项目星标历史"]
+    A["每 12 小时或手动触发"] --> B["读取 Pages 历史 JSON"]
+    B --> C["一次 GitHub 仓库元数据请求"]
+    C --> D["合并当日日期与 Star 总数"]
+    D --> E["向官方本地后端注入缓存"]
     E --> F["生成并校验 Light / Dark SVG"]
-    F --> G{"与当前 Pages 内容相同？"}
-    G -->|是| H["跳过部署"]
-    G -->|否| I["上传并部署 GitHub Pages"]
-    I --> J["README 从项目 Pages 加载图片"]
+    F --> G{"manifest 是否变化？"}
+    G -->|否| H["结束，不部署、不 commit"]
+    G -->|是| I["部署 JSON + SVG 到 Pages"]
+    I --> J["下次运行从 Pages 继续"]
 ```
 
-整个方案由三部分组成：
+统一脚本提供三个子命令：
 
-1. **安装器**：识别仓库和 Pages URL，生成项目专用文件，遇到不同的现有文件时默认停止覆盖。
-2. **本地渲染桥接脚本**：只允许访问 `127.0.0.1` / `localhost`，下载、验证并原子写入两份 SVG。
-3. **GitHub Actions 工作流**：启动官方后端、管理 Token 临时文件、比较旧图并部署 Pages。
+1. `refresh-data`：读取 Pages JSON，查询当前仓库总数，并按日更新历史。
+2. `patch-upstream`：窄范围修改固定版本官方后端，使其从本地 JSON 初始化缓存。
+3. `render`：只访问 `127.0.0.1`，校验并原子写入两种主题 SVG；本地渲染临时失败时可复用上一份 Pages 图对。
 
 ## 生成的项目文件
 
 ```text
 .github/
+├── data/
+│   └── star-history-data.json
 ├── scripts/
-│   └── render_star_history.py
+│   └── star_history.py
 └── workflows/
     └── sync-star-history.yml
 ```
 
-Pages Artifact 只包含：
+Pages Artifact 包含：
 
 ```text
 .nojekyll
+manifest.sha256
+star-history-data.json
 star-history-light.svg
 star-history-dark.svg
 ```
 
-Token、Runner 日志、上游源码、依赖目录和临时比较文件都不会发布到 Pages。
+其中 `.github/data/star-history-data.json` 是冷启动种子，Pages 上的同名文件才是日常运行的状态源。正常情况下无需从 Pages 手动同步回本地；只有需要额外冷备份时，才在人工审阅后将 Pages JSON 写回仓库并提交一次维护 commit。
 
 ## 验证
-
-本项目自身的验证命令：
 
 ```bash
 python3 -m py_compile \
   skills/deploy-star-history-pages/scripts/install.py \
-  skills/deploy-star-history-pages/assets/render_star_history.py
+  skills/deploy-star-history-pages/assets/star_history.py
 
 python3 -m unittest discover -s tests -v
 
 git diff --check
 ```
-
-维护 Skill 时还应使用 Codex `skill-creator` 自带的 `quick_validate.py` 检查 `SKILL.md` 元数据。
 
 安装到目标仓库后，如本机已有 `actionlint`：
 
@@ -243,44 +226,54 @@ git diff --check
 actionlint .github/workflows/sync-star-history.yml
 ```
 
+维护 Skill 时还应使用 Codex `skill-creator` 的 `quick_validate.py` 校验 `SKILL.md` 元数据，并在临时仓库执行一次安装测试。
+
 ## 常见问题
 
-### 为什么不直接把 `${{ github.token }}` 交给官方后端？
+### 历史 JSON 到底存在哪里？
 
-本方案复用了 `gpt-5.6-instruct` 中已经跑通的实现：使用显式 Repository Secret，并把官方后端启动时的 Token 自检仓库收窄为目标仓库。这样更适合仓库级 fine-grained Token，也能稳定获得认证请求的 API 配额。
+运行态保存在项目 Pages 的 `star-history-data.json`，Actions 会自动读取和更新；仓库里的 `.github/data/star-history-data.json` 只是首次部署或 Pages 被重置后的种子。日常无需手工同步。
 
-### `star-history.com` 再次宕机会怎样？
+### 每 12 小时会产生一次 commit 吗？
 
-README 加载的是你自己 Pages 上已经部署的 SVG，不经过官方托管图片 API。已有图片仍会显示；后续刷新任务直接读取 GitHub API，并在 Runner 内运行官方渲染源码。
+不会。工作流部署 Pages Artifact，不向 Git 分支写入内容；而且 manifest 未变化时连 Pages 部署都会跳过。
+
+### 还需要配置 Access Token 吗？
+
+不需要。默认工作流使用 GitHub 自动注入、仅在当前任务有效的 `${{ github.token }}`，并只请求一次仓库元数据。
+
+### 托管 `star-history.com` 服务再次宕机会怎样？
+
+README 加载项目自己的 Pages SVG，刷新也不调用托管图表接口，因此其宕机不会中断这条路径。工作流仍依赖官方 GitHub 源码仓库与 npm 依赖可获取。
 
 ### 可以提高刷新频率吗？
 
-可以通过 `--cron` 修改，但需要同时考虑 GitHub API 配额、Actions 用量、仓库星标增长速度和 Pages 部署频率。大多数项目每 12 小时一次已经足够接近实时。
+可以通过 `--cron` 修改。由于每次只请求一次仓库元数据，API 压力较小；仍应考虑 Actions 和 Pages 使用量。
 
-### 支持自定义域名吗？
+### Pages 被删除后怎么办？
 
-支持。安装时传入 `--pages-url https://stars.example.com`，并确保 GitHub Pages 自定义域名已配置完成。
+工作流只在 Pages JSON 返回 404 时退回仓库种子。默认种子会重新初始化为两点历史。若你需要灾难恢复，定期人工备份 Pages JSON 到 `.github/data/`，详情见 [`operations.md`](skills/deploy-star-history-pages/references/operations.md)。
 
 ### 官方源码更新后工作流失败怎么办？
 
-查看 [`operations.md`](skills/deploy-star-history-pages/references/operations.md) 的故障表。常见原因是 `backend/token.ts` 的内部实现发生变化。修复并验证后，建议用 `--source-ref <commit-sha>` 固定版本。
+查看 [`operations.md`](skills/deploy-star-history-pages/references/operations.md)。重点检查 `backend/main.ts` 的启动结构与 `/svg` 路由，在完成构建和双主题视觉验证后再更新固定 SHA。
 
 ### 支持私有仓库吗？
 
-技术上取决于 GitHub 套餐、Pages 可见性和 Token 权限。星标趋势图片可能暴露仓库存在和增长信息，部署前应确认项目的可见性要求。
+取决于 GitHub 套餐与 Pages 可见性。公开 Pages JSON/SVG 会暴露仓库名称与增长趋势，部署前应确认可见性要求。
 
 ## 项目来源与致谢
 
-这个 Skill 提炼自 [`MDX-Tom/gpt-5.6-instruct`](https://github.com/MDX-Tom/gpt-5.6-instruct) 中已实际部署的 Star History 工作流，保留并泛化了以下经过验证的设计：
+这个 Skill 同步并泛化自 [`MDX-Tom/gpt-5.6-instruct`](https://github.com/MDX-Tom/gpt-5.6-instruct) 的当前生产方案：
 
-- 在 Actions 中检出并运行官方 Star History 源码；
-- 通过本地后端生成 Light / Dark SVG；
-- 使用仓库 Secret 与目标仓库 Token 自检；
-- 校验 SVG 后原子写入；
-- 与当前 Pages 内容比较，仅在变化时部署；
-- 使用 README `<picture>` 在明暗主题间自动切换。
+- Pages JSON 作为运行态历史；
+- 每次一次仓库元数据请求；
+- 本地缓存注入官方渲染器；
+- Light / Dark SVG 完整校验；
+- manifest 按变化部署；
+- 无 PAT、无个人 Stargazer 列表、无计划任务 Git commit。
 
-star-history图像渲染来自star-history.com官方开源代码 [`star-history/star-history`](https://github.com/star-history/star-history)。
+图像渲染来自官方开源仓库 [`star-history/star-history`](https://github.com/star-history/star-history)。
 
 ## License
 
