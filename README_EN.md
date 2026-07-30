@@ -1,7 +1,7 @@
 <h1 align="center">⭐ Deploy Star History Pages</h1>
 
 <p align="center">
-  Run the official Star History renderer in GitHub Actions and publish repository-owned light/dark charts and history state to GitHub Pages.
+  Run star-history.com's official open-source renderer in GitHub Actions, persist project-owned data on GitHub Pages, and publish the repository's light/dark charts and history state to its own Pages site—without depending on third-party cloud data or external APIs.
 </p>
 
 <p align="center">
