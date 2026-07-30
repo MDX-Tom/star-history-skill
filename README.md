@@ -1,7 +1,7 @@
 <h1 align="center">⭐ Deploy Star History Pages</h1>
 
 <p align="center">
-  用 GitHub Actions 运行官方 Star History 渲染器，把项目自身的明暗主题曲线和历史状态发布到 GitHub Pages。
+  用 GitHub Actions 运行官方 star-history.com 开源渲染器，在 GitHub Pages 保存本地数据，把项目自身的明暗主题曲线和历史状态发布到项目自有 GitHub Pages，不再依赖云端数据与外部接口。
 </p>
 
 <p align="center">
